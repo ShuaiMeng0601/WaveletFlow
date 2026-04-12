@@ -11,6 +11,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from afno2d import AFNO2D, Block
+from wno2d import WaveletBlock
 from functools import partial
 from einops.layers.torch import Rearrange
 import pdb
@@ -374,9 +375,9 @@ class SiT(nn.Module):
             print('using linear droppath with expect rate', drop_path_rate * 0.5)
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, afno_depth)]
         self.afno_blocks = nn.ModuleList([
-            Block(
+            WaveletBlock(
                 dim=hidden_size, mlp_ratio=mlp_ratio,
-                drop=0., drop_path=dpr[i], norm_layer=norm_layer, h=h, w=w, use_fno=False, use_blocks=False)
+                drop=0., drop_path=dpr[i], norm_layer=norm_layer, h=h, w=w, level=2, wave='db4')
             for i in range(afno_depth)])
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
