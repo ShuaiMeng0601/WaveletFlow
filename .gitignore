@@ -8,3 +8,4 @@ logs/*
 *.ipynb
 */__pycache__
 output/
+data/
