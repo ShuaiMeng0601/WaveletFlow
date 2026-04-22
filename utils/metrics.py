@@ -76,15 +76,17 @@ def metric_func(pred, target, if_mean=True, Lx=1., Ly=1., Lz=1., iLow=4, iHigh=1
 
     if len(idxs) == 4:  # 1D
         nx = idxs[2]
-        pred_F = torch.fft.rfft(pred, dim=2)
-        target_F = torch.fft.rfft(target, dim=2)
+        pred_F = torch.fft.rfft(pred.cpu().float(), dim=2)
+        target_F = torch.fft.rfft(target.cpu().float(), dim=2)
         _err_F = torch.sqrt(torch.mean(torch.abs(pred_F - target_F) ** 2, axis=0)) / nx * Lx
-    if len(idxs) == 5:  # 2D
-        pred_F = torch.fft.fftn(pred, dim=[2, 3])
-        target_F = torch.fft.fftn(target, dim=[2, 3])
+    if len(idxs) == 5:  # 2D — compute FFT on CPU to avoid cuFFT OOM
+        pred_cpu = pred.cpu().float()
+        target_cpu = target.cpu().float()
+        pred_F = torch.fft.fftn(pred_cpu, dim=[2, 3])
+        target_F = torch.fft.fftn(target_cpu, dim=[2, 3])
         nx, ny = idxs[2:4]
         _err_F = torch.abs(pred_F - target_F) ** 2
-        err_F = torch.zeros([nb, nc, min(nx // 2, ny // 2), nt]).to(device)
+        err_F = torch.zeros([nb, nc, min(nx // 2, ny // 2), nt])
         for i in range(nx // 2):
             for j in range(ny // 2):
                 it = mt.floor(mt.sqrt(i ** 2 + j ** 2))
@@ -92,6 +94,7 @@ def metric_func(pred, target, if_mean=True, Lx=1., Ly=1., Lz=1., iLow=4, iHigh=1
                     continue
                 err_F[:, :, it] += _err_F[:, :, i, j]
         _err_F = torch.sqrt(torch.mean(err_F, axis=0)) / (nx * ny) * Lx * Ly
+        _err_F = _err_F.to(device)
     elif len(idxs) == 6:  # 3D
         pred_F = torch.fft.fftn(pred, dim=[2, 3, 4])
         target_F = torch.fft.fftn(target, dim=[2, 3, 4])

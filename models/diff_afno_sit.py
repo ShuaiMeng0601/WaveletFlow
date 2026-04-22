@@ -317,6 +317,9 @@ class SiT(nn.Module):
         z_dims=[128],
         projector_dim=2048,
         num_frames=4,
+        mixer='wavelet',           # 'wavelet' or 'afno'
+        wavelet_level=2,
+        wavelet_wave='db4',
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -327,7 +330,7 @@ class SiT(nn.Module):
         self.num_heads = num_heads
         self.use_cfg = use_cfg
         self.num_classes = num_classes
-        self.z_dims = [768]
+        self.z_dims = z_dims
         self.encoder_depth = encoder_depth
 
         # self.x_embedder = PatchEmbed(
@@ -374,11 +377,22 @@ class SiT(nn.Module):
         else:
             print('using linear droppath with expect rate', drop_path_rate * 0.5)
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, afno_depth)]
+        MixerBlock = WaveletBlock if mixer == 'wavelet' else Block
+        mixer_kwargs = dict(level=wavelet_level, wave=wavelet_wave) if mixer == 'wavelet' else {}
         self.afno_blocks = nn.ModuleList([
-            WaveletBlock(
+            MixerBlock(
                 dim=hidden_size, mlp_ratio=mlp_ratio,
-                drop=0., drop_path=dpr[i], norm_layer=norm_layer, h=h, w=w, level=2, wave='db4')
+                drop=0., drop_path=dpr[i], norm_layer=norm_layer, h=h, w=w,
+                **mixer_kwargs)
             for i in range(afno_depth)])
+        # hybrid: WNO residual refinement on top of AFNO
+        if mixer == 'hybrid':
+            self.wno_blocks = nn.ModuleList([
+                WaveletBlock(
+                    dim=hidden_size, mlp_ratio=mlp_ratio,
+                    drop=0., drop_path=dpr[i], norm_layer=norm_layer, h=h, w=w,
+                    level=wavelet_level, wave=wavelet_wave)
+                for i in range(afno_depth)])
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.norm = norm_layer(hidden_size)
@@ -457,6 +471,9 @@ class SiT(nn.Module):
         afno_feat = x.detach().clone()
         for afno_blk in self.afno_blocks:
             afno_feat = afno_blk(afno_feat)
+        if hasattr(self, 'wno_blocks'):
+            for wno_blk in self.wno_blocks:
+                afno_feat = afno_feat + wno_blk(afno_feat)
         afno_feat = self.norm(afno_feat)
         
         for i, block in enumerate(self.spatial_blocks):

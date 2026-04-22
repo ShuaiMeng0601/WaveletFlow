@@ -59,8 +59,17 @@ def parse_args(input_args=None):
     
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--encoder-depth", type=int, default=4)
-    parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--qk-norm",  action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lr-cycles", type=int, default=3, help="Number of CyclicLR cycles over total training")
+    parser.add_argument("--spa-depth", type=int, default=6, help="Number of spatial transformer blocks")
+    parser.add_argument("--tem-depth", type=int, default=3, help="Number of temporal transformer blocks")
+    parser.add_argument("--afno-depth", type=int, default=6, help="Number of mixer (AFNO/Wavelet) blocks")
+    parser.add_argument("--mixer", type=str, default="wavelet", choices=["wavelet", "afno", "hybrid"])
+    parser.add_argument("--wavelet-level", type=int, default=2, help="DWT decomposition levels (wavelet mixer only)")
+    parser.add_argument("--wavelet-wave", type=str, default="db4", help="Wavelet type, e.g. db4, haar, sym4 (wavelet mixer only)")
+    parser.add_argument("--fused-attn", action="store_true", default=True)
+    parser.add_argument("--no-fused-attn", dest="fused_attn", action="store_false")
+    parser.add_argument("--qk-norm", action="store_true", default=True)
+    parser.add_argument("--no-qk-norm", dest="qk_norm", action="store_false")
 
     # dataset
     parser.add_argument("--data-dir", type=str, default="../data/imagenet256")
@@ -91,7 +100,7 @@ def parse_args(input_args=None):
     parser.add_argument("--cfg-prob", type=float, default=0.1)
     parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
-    parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--legacy", action="store_true", default=False)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -218,15 +227,15 @@ def main(args):
             torch.cuda.manual_seed_all(args.seed)
 
     # Create model:
-    assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = args.resolution 
+    # Actual spatial size = original 512 / reduced_resolution
+    latent_size = 512 // args.reduced_resolution
 
     # if args.enc_type != 'None':
     #     encoders, encoder_types, architectures = load_encoders(args.enc_type, device)
     # else:
     #     encoders, encoder_types, architectures = [None], [None], [None]
 
-    z_dims = [128]
+    z_dims = [256]
     # z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
@@ -235,6 +244,12 @@ def main(args):
         use_cfg = (args.cfg_prob > 0),
         z_dims = z_dims,
         encoder_depth=args.encoder_depth,
+        mixer=args.mixer,
+        wavelet_level=args.wavelet_level,
+        wavelet_wave=args.wavelet_wave,
+        spa_depth=args.spa_depth,
+        tem_depth=args.tem_depth,
+        afno_depth=args.afno_depth,
         **block_kwargs
     )
     if accelerator.is_main_process:
@@ -245,7 +260,8 @@ def main(args):
     
     ckpt = torch.load(args.pretrained_mae_path, map_location='cpu')
     ckpt = remove_module_prefix(ckpt['model_state_dict'])
-    vit_model = MAE_ViViT()
+    vit_model = MAE_ViViT(emb_dim=256, encoder_layer=4, encoder_head=4,
+                          decoder_layer=2, decoder_head=4)
     encoder_state_dict = {k.replace('encoder.', ''): v for k, v in ckpt.items() if 'encoder' in k}
     
     vit_model.encoder.load_state_dict(encoder_state_dict)
@@ -277,12 +293,7 @@ def main(args):
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )    
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.epochs, gamma=0.1)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.epochs//3, T_mult=2, eta_min=1e-8)
-    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=args.learning_rate//5, max_lr=args.learning_rate,
-                                              mode = 'triangular2', gamma = 0.95,
-                                              step_size_up=10000, step_size_down=20000,cycle_momentum=False)  
+    # scheduler is created after dataloader so step sizes adapt to total_steps
     
 
     if 'CFD' in args.flnm:
@@ -314,6 +325,23 @@ def main(args):
     )
     if accelerator.is_main_process:
         logger.info(f"Dataset contains {len(train_dataset):,} images, {len(train_dataloader)} iters ({args.data_dir})")
+
+    total_steps = args.epochs * len(train_dataloader)
+    cycle_steps = total_steps // args.lr_cycles
+    step_size_up = cycle_steps // 3          # 1/3 of cycle: warm up
+    step_size_down = cycle_steps - step_size_up  # 2/3 of cycle: cool down
+    scheduler = torch.optim.lr_scheduler.CyclicLR(
+        optimizer,
+        base_lr=args.learning_rate / 5,
+        max_lr=args.learning_rate,
+        mode='triangular2',
+        gamma=0.95,
+        step_size_up=step_size_up,
+        step_size_down=step_size_down,
+        cycle_momentum=False,
+    )
+    if accelerator.is_main_process:
+        logger.info(f"CyclicLR: {args.lr_cycles} cycles, step_size_up={step_size_up}, step_size_down={step_size_down} (total_steps={total_steps})")
     
     # Prepare models for training:
     update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
@@ -403,7 +431,7 @@ def main(args):
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1                
-            if global_step % args.checkpointing_steps == 0 and global_step > (max_train_steps//2):
+            if global_step % args.checkpointing_steps == 0 and global_step > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
                         "model": model.state_dict(),
@@ -416,7 +444,7 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0):
+            if global_step % args.sampling_steps == 0 and global_step > 0:
                 model.eval()  # important! This disables randomized embedding dropout
                 from samplers import euler_sampler
                 
@@ -454,6 +482,7 @@ def main(args):
                     logger.info(f'RMSE: {_err_RMSE_avg:.4f}, nRMSE: {_err_nRMSE_avg:.4f}, MAX-ERR:{_err_max_avg:.4f}')
                     val_log = {"val_RMSE": _err_RMSE_avg, "val_nRMSE": _err_nRMSE_avg, 'MAX-ERR':_err_max_avg}
                     accelerator.log(val_log, step=global_step)
+                torch.cuda.empty_cache()
 
             logs = {
                 "lr": current_lr,

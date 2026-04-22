@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.cuda.amp import custom_fwd, custom_bwd
 from pytorch_wavelets import DWTForward, DWTInverse
 
 class Mlp2d(nn.Module):
@@ -44,6 +45,7 @@ class WNO2D(nn.Module):
         self.alpha = nn.ParameterList([nn.Parameter(torch.zeros(1)) for _ in range(level)])
         self.eta = nn.ParameterList([nn.Parameter(torch.ones(1)) for _ in range(level)])
 
+    @custom_fwd(cast_inputs=torch.float32)
     def forward(self, x, spatial_size=None):
         bias = x
 

@@ -67,25 +67,30 @@ def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Training")
 
     # logging:
-    parser.add_argument("--output-dir", type=str, default="/your_path")
+    parser.add_argument("--output-dir", type=str, default="exps")
     #* 替换为新的exp的name
-    parser.add_argument("--exp-name", type=str, default="3d_cfd_0.01_align_difftrans_afno_cycle_0428-03:07")
+    parser.add_argument("--exp-name", type=str, default="fourierflow_v2_0421-17:53")
     parser.add_argument("--flnm", type=str, default="2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5")
-    parser.add_argument("--logging-dir", type=str, default="/your_path")
+    parser.add_argument("--logging-dir", type=str, default="exps/logs")
     parser.add_argument("--report-to", type=str, default="tensorboard")
     parser.add_argument("--sampling-steps", type=int, default=10000)
     parser.add_argument("--ckpt-step", type=int, default=135000)
+    parser.add_argument("--test-subset", type=str, default="")
 
     # model
     parser.add_argument("--model", type=str,default="SiT-XL/2")
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--encoder-depth", type=int, default=3)
+    parser.add_argument("--spa-depth", type=int, default=6)
+    parser.add_argument("--tem-depth", type=int, default=3)
+    parser.add_argument("--afno-depth", type=int, default=6)
     parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--qk-norm",  action=argparse.BooleanOptionalAction, default=False)
 
     # dataset
     parser.add_argument("--data-dir", type=str, default="../data/imagenet256")
     parser.add_argument("--resolution", type=int, choices=[128,256], default=128)
+    parser.add_argument("--reduced-resolution", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=64)
 
     # precision
@@ -105,6 +110,9 @@ def parse_args(input_args=None):
     parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
     parser.add_argument("--proj-coeff", type=float, default=0)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
+    parser.add_argument("--mixer", type=str, default="wavelet")
+    parser.add_argument("--wavelet-level", type=int, default=2)
+    parser.add_argument("--wavelet-wave", type=str, default="db4")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
 
     if input_args is not None:
@@ -126,10 +134,9 @@ def main(args):
         set_seed(args.seed)
     
     # Create model:
-    assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = args.resolution 
+    latent_size = 512 // args.reduced_resolution
 
-    z_dims = [128]
+    z_dims = [256]
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
         input_size=latent_size,
@@ -137,6 +144,12 @@ def main(args):
         use_cfg = (args.cfg_prob > 0),
         z_dims = z_dims,
         encoder_depth=args.encoder_depth,
+        spa_depth=args.spa_depth,
+        tem_depth=args.tem_depth,
+        afno_depth=args.afno_depth,
+        mixer=args.mixer,
+        wavelet_level=args.wavelet_level,
+        wavelet_wave=args.wavelet_wave,
         **block_kwargs
     )
     ckpt_name = str(args.ckpt_step).zfill(7) +'.pt'
@@ -162,27 +175,69 @@ def main(args):
     
     # flnm = '2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5'
     flnm = args.flnm
-    base_path='/your_path'
-    reduce_resolution = 4
+    base_path='data/'
+    reduce_resolution = args.reduced_resolution
     reduced_batch = 1
 
-    train_dataset, test_dataset,normalizer = FNODatasetMultistep.get_train_test_datasets(
-                                    flnm,
-                                    reduced_resolution=reduce_resolution,
-                                    reduced_resolution_t=1,
-                                    reduced_batch=reduced_batch,
-                                    initial_step=0,
-                                    saved_folder=base_path,
-                                    if_eval_plot=True
-                                )
+    if args.test_subset:
+        logger.info(f"Loading test subset from {args.test_subset}...")
+        import h5py
+        with h5py.File(args.test_subset, 'r') as f:
+            # Reconstruct the dataset object minimally
+            class SimpleDataset(torch.utils.data.Dataset):
+                def __init__(self, f):
+                    # structure in subset: [B, T, H, W] -> [B, H, W, T, C]
+                    d = np.array(f['density'])
+                    p = np.array(f['pressure'])
+                    vx = np.array(f['Vx'])
+                    vy = np.array(f['Vy'])
+                    self.data = np.stack([d, p, vx, vy], axis=-1) # [B, T, H, W, C]
+                    self.data = np.transpose(self.data, (0, 2, 3, 1, 4)) # [B, H, W, T, C]
+                    
+                    x = np.array(f['x-coordinate'])
+                    y = np.array(f['y-coordinate'])
+                    X, Y = np.meshgrid(x, y, indexing='ij')
+                    self.grid = torch.stack((torch.tensor(X), torch.tensor(Y)), axis=-1)
+                    
+                    self.mean = np.array(f['norm_mean'])
+                    self.std = np.array(f['norm_std'])
+                    self.eps = 1e-8
+                    
+                    # Normalize
+                    self.data = (self.data - self.mean) / (self.std + self.eps)
+                    self.data = torch.tensor(self.data, dtype=torch.float32)
+
+                def __len__(self): return len(self.data)
+                def __getitem__(self, idx):
+                    # Same logic as Multistep dataset
+                    k = 4
+                    return self.data[idx,...,k:k*2,:], self.grid, self.data[idx,...,0:k,:]
+
+            test_dataset = SimpleDataset(f)
+            
+            class SimpleNormalizer:
+                def __init__(self, m, s): self.mean, self.std, self.eps = m, s, 1e-8
+                def decode(self, x): return (x * (self.std + self.eps)) + self.mean
+            
+            normalizer = SimpleNormalizer(test_dataset.mean, test_dataset.std)
+    else:
+        train_dataset, test_dataset,normalizer = FNODatasetMultistep.get_train_test_datasets(
+                                        flnm,
+                                        reduced_resolution=reduce_resolution,
+                                        reduced_resolution_t=1,
+                                        reduced_batch=reduced_batch,
+                                        initial_step=0,
+                                        saved_folder=base_path,
+                                        if_eval_plot=True
+                                    )
     local_batch_size = 8
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=local_batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=False
     )
 
     print(f'==== {next(iter(test_dataloader))[0].mean().item():.6f} ====')
@@ -222,27 +277,63 @@ def main(args):
         _err_max_avg /= len(test_dataloader)
         
         logger.info(f'RMSE: {_err_RMSE_avg:.4f}, nRMSE: {_err_nRMSE_avg:.4f}, Max:{_err_max_avg:.4f}')
-    # with PdfPages(os.path.join('/your_path',args.exp_name+'.pdf')) as pdf:
-    #     print(samples.shape)
-    #     samples = rearrange(samples, "B T C H W -> B H W T C")
-    #     target_test = rearrange(target_test, "B T C H W -> B H W T C")
-    #     samples = normalizer.decode(samples.cpu())
-    #     target_test = normalizer.decode(target_test.cpu())
-    #     for i in range(samples.size(0)):  
-    #         fig, axes = plt.subplots(8, 4, figsize=(16, 9))  
-    #         axes = axes.flatten()  # 将 axes 
-    #         for j in range(samples.size(-1)):
-    #             T = samples.size(-2)
-    #             for k in range(T):  
-    #                 axes[j*T+k].imshow(samples[i,:,:,k,j].numpy(), cmap='coolwarm')  
-    #                 axes[j*T+k+(T*samples.size(-1))].imshow(target_test[i,:,:,k,j].numpy(), cmap='coolwarm')  
-    #                 axes[j*T+k].axis('off')  
-    #                 axes[j*T+k].set_title(f'Smaple {i+1}, Step {k+1}, Channel {j+1}') 
-    #                 axes[j*T+k+(T*samples.size(-1))].axis('off') 
-    #                 axes[j*T+k+(T*samples.size(-1))].set_title(f'GT {i+1}, Step {k+1}, Channel {j+1}')  
-    #         plt.tight_layout(pad=0.5, w_pad=2, h_pad=2)
-    #         pdf.savefig(fig,dpi=300)  
-    #         plt.close(fig)  
+    vis_dir = os.path.join(args.output_dir, 'visualizations', args.exp_name)
+    os.makedirs(vis_dir, exist_ok=True)
+    samples = rearrange(samples, "B T C H W -> B H W T C")
+    target_test = rearrange(target_test, "B T C H W -> B H W T C")
+    samples = normalizer.decode(samples.cpu())
+    target_test = normalizer.decode(target_test.cpu())
+
+    # only visualize Vx (ch2) and Vy (ch3)
+    vis_channels = [2, 3]
+    ch_names = ["Vx", "Vy"]
+    T = samples.size(-2)
+
+    for i in range(min(3, samples.size(0))):
+        # layout: rows = [Pred Vx, GT Vx, Pred Vy, GT Vy], cols = timesteps
+        n_rows = len(vis_channels) * 2  # 4
+        fig, axes = plt.subplots(n_rows, T, figsize=(T * 3.5, n_rows * 3.2))
+
+        # row order: Pred Vx, GT Vx, Pred Vy, GT Vy
+        row_configs = []
+        for ch_name, ch_idx in zip(ch_names, vis_channels):
+            row_configs.append(("Prediction", ch_name, ch_idx, samples))
+            row_configs.append(("Ground Truth", ch_name, ch_idx, target_test))
+
+        for row, (src_label, ch_name, ch_idx, data) in enumerate(row_configs):
+            for k in range(T):
+                ax = axes[row, k]
+                img = data[i, :, :, k, ch_idx].numpy()
+                ch_data = data[i, :, :, :, ch_idx].numpy()
+                vmin, vmax = ch_data.min(), ch_data.max()
+                ax.imshow(img, cmap='coolwarm', vmin=vmin, vmax=vmax)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if row == 0:
+                    ax.set_title(f't = {k+1}', fontsize=9)
+                # colored border: orange for Prediction, teal for Ground Truth
+                color = '#E87722' if src_label == 'Prediction' else '#1A936F'
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(color)
+                    spine.set_linewidth(3)
+                    spine.set_visible(True)
+            # row label on left
+            axes[row, 0].set_ylabel(
+                f'{src_label}\n{ch_name}', fontsize=9,
+                rotation=90, labelpad=8, va='center',
+                color='#E87722' if src_label == 'Prediction' else '#1A936F',
+                fontweight='bold'
+            )
+
+        fig.suptitle(
+            f'Sample {i+1}   |   RMSE = {_err_RMSE_avg:.4f}   nRMSE = {_err_nRMSE_avg:.4f}',
+            fontsize=10, y=1.01
+        )
+        plt.tight_layout(pad=0.4, h_pad=0.6, w_pad=0.3)
+        fig_path = os.path.join(vis_dir, f'sample_{i+1}.png')
+        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+        print(f"Saved visualization to {fig_path}")
+        plt.close(fig)
 
 if __name__ == "__main__":
     args = parse_args()
