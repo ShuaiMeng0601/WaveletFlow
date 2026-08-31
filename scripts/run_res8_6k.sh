@@ -2,7 +2,8 @@
 # depth 6/3/6, reduced_resolution=8 (64x64), batch=32, 1000 epochs
 # checkpointing every 200 epochs = 5600 steps (28 iters/epoch x 200)
 
-PYTHON=/data/shuaim/miniconda3/envs/waveletflow/bin/python
+PYTHON=${PYTHON:-python}
+mkdir -p exps
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 COMMON="--model SiT-S/2
@@ -18,7 +19,7 @@ COMMON="--model SiT-S/2
   --base-path data/
   --flnm 2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5
   --output-dir exps/
-  --logging-dir exps/logs
+  --logging-dir logs
   --num-workers 4"
 
 echo "Starting FourierFlow (AFNO) on GPU 0..."

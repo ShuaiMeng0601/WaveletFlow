@@ -267,7 +267,7 @@ class SiTBlock(nn.Module):
             self.adaLN_modulation(c).chunk(6, dim=-1)
         )
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))[0]
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))[0]
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
         return x
 
@@ -396,7 +396,7 @@ class SiT(nn.Module):
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.norm = norm_layer(hidden_size)
-        self.conv_fuse = nn.Conv2d(in_channels=2 * in_channels, out_channels=1, kernel_size=1, stride=1)
+        self.conv_fuse = nn.Conv2d(in_channels=2 * num_frames, out_channels=1, kernel_size=1, stride=1)
         self.sigmoid = nn.Sigmoid()
        
         self.initialize_weights()
@@ -618,5 +618,4 @@ if __name__ == "__main__":
     x = torch.randn(batch_size, seq_len, 768)
     out = attention(x)
     
-
 

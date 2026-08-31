@@ -2,7 +2,8 @@
 # HybridFlow: AFNO + WNO residual refinement
 # depth 6/3/6, reduced_resolution=8 (64x64), batch=32, 1000 epochs
 
-PYTHON=/data/shuaim/miniconda3/envs/waveletflow/bin/python
+PYTHON=${PYTHON:-python}
+mkdir -p exps
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Starting HybridFlow (AFNO + WNO residual) on GPU 0..."
@@ -21,7 +22,7 @@ CUDA_VISIBLE_DEVICES=0 nohup $PYTHON -u train.py \
   --base-path data/ \
   --flnm 2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5 \
   --output-dir exps/ \
-  --logging-dir exps/logs \
+  --logging-dir logs \
   --num-workers 4 \
   --exp-name hybridflow_res8 \
   > exps/run_hybridflow_res8.log 2>&1 &

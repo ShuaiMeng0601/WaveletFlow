@@ -20,9 +20,12 @@ import os
 from samplers import euler_sampler
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-import sys
-sys.path.append('/your_path')
-from FourierFlowSurrogate.models.diff_afno_sit import SiT_models
+try:
+    from FourierFlowSurrogate.models.diff_afno_sit import SiT_models
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "all_eval_step.py requires a separate FourierFlowSurrogate checkout on PYTHONPATH."
+    ) from exc
 from models.diff_afno_sit import SiT_models as SiT_flow_models
 
 logger = get_logger(__name__)
@@ -160,7 +163,7 @@ def evaluate_flow_model(
     device,
     logger,
     normalizer=None,  
-    cfg_scale=4.0,
+    cfg_scale=1.0,
     num_steps=3,
     guidance_low=0.0,
     guidance_high=1.0,
@@ -307,9 +310,9 @@ def main(args):
         encoder_depth=args.encoder_depth,
         **block_kwargs
     )
-    ckpt_step_flow = 270000
-    output_dir_flow = '/your_path'
-    exp_name_flow = "3d_cfd_mse_align_0.01_difftrans_afno_cycle_0220-00:48"
+    ckpt_step_flow = args.flow_ckpt_step
+    output_dir_flow = args.flow_output_dir
+    exp_name_flow = args.flow_exp_name
     ckpt_name_flow = str(ckpt_step_flow).zfill(7) +'.pt'
     ckpt_flow = torch.load(
         f'{os.path.join(output_dir_flow, exp_name_flow)}/checkpoints/{ckpt_name_flow}',
@@ -328,9 +331,9 @@ def main(args):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
     
-    flnm = '2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5'
-    base_path='/your_path'
-    reduce_resolution = 4
+    flnm = args.flnm
+    base_path = args.base_path
+    reduce_resolution = args.reduced_resolution
     reduced_batch = 1
 
     train_dataset, test_dataset,normalizer = FNODatasetMultistep.get_train_test_datasets(
@@ -372,7 +375,7 @@ def main(args):
         device=device,
         logger=logger,
         normalizer=normalizer,  # optional
-        cfg_scale=4.0,
+        cfg_scale=1.0,
         num_steps=3,
         guidance_low=0.0,
         guidance_high=1.0,
@@ -382,7 +385,7 @@ def main(args):
     )
 
 
-    # with PdfPages(os.path.join('/your_path',args.exp_name+'.pdf')) as pdf:
+    # with PdfPages(os.path.join(args.output_dir, args.exp_name + '.pdf')) as pdf:
     #     print(samples.shape)
     #     samples = rearrange(samples, "B T C H W -> B H W T C")
     #     target_test = rearrange(target_test, "B T C H W -> B H W T C")
@@ -410,13 +413,16 @@ def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Training")
 
     # logging:
-    parser.add_argument("--output-dir", type=str, default="/your_path")
+    parser.add_argument("--output-dir", type=str, default="exps/surrogate")
     #* 替换为新的exp的name
     parser.add_argument("--exp-name", type=str, default="3d_cfd_surrogate_predict_0319-11-s06")
-    parser.add_argument("--logging-dir", type=str, default="/your_path")
+    parser.add_argument("--logging-dir", type=str, default="logs/all_eval_step")
     parser.add_argument("--report-to", type=str, default="tensorboard")
     parser.add_argument("--sampling-steps", type=int, default=10000)
     parser.add_argument("--ckpt-step", type=int, default=36000)
+    parser.add_argument("--flow-output-dir", type=str, default="exps")
+    parser.add_argument("--flow-exp-name", type=str, default="waveletflow_run")
+    parser.add_argument("--flow-ckpt-step", type=int, default=270000)
 
     # model
     parser.add_argument("--model", type=str,default="SiT-XL/2")
@@ -427,6 +433,9 @@ def parse_args(input_args=None):
 
     # dataset
     parser.add_argument("--data-dir", type=str, default="../data/imagenet256")
+    parser.add_argument("--base-path", type=str, default="data")
+    parser.add_argument("--flnm", type=str, default="2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5")
+    parser.add_argument("--reduced-resolution", type=int, default=4)
     parser.add_argument("--resolution", type=int, choices=[128,256], default=128)
     parser.add_argument("--batch-size", type=int, default=64)
 

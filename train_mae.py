@@ -13,11 +13,11 @@ from data.CNS_data_utils import FNODatasetMultistep
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str,
-                        default="/data1/zikangxu/qingsong/WaveletFlow/data/")
+                        default="data")
     parser.add_argument("--flnm", type=str,
                         default="2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5")
     parser.add_argument("--output-dir", type=str,
-                        default="/data1/zikangxu/qingsong/WaveletFlow/exps/mae/")
+                        default="exps/mae")
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -75,8 +75,9 @@ def main():
     )
     print(f"Dataset size: {len(train_dataset)}, iters/epoch: {len(train_loader)}", flush=True)
 
+    image_size = 512 // args.reduced_resolution
     model = MAE_ViViT(
-        image_size=128,
+        image_size=image_size,
         patch_size=8,
         emb_dim=256,
         encoder_layer=4,

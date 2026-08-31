@@ -2,7 +2,8 @@
 # Run all 3 models for 3000 epochs on 3 separate GPUs in parallel
 # batch_size=128, spa/tem/afno depth=3/2/3, checkpointing every 200 epochs (1400 steps)
 
-PYTHON=/data/shuaim/miniconda3/envs/waveletflow/bin/python
+PYTHON=${PYTHON:-python}
+mkdir -p exps
 COMMON="--model SiT-S/2
   --spa-depth 3 --tem-depth 2 --afno-depth 3
   --batch-size 128
@@ -14,7 +15,7 @@ COMMON="--model SiT-S/2
   --base-path data/
   --flnm 2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5
   --output-dir exps/
-  --logging-dir exps/logs
+  --logging-dir logs
   --num-workers 4"
 
 echo "Starting FourierFlow (AFNO) on GPU 0..."

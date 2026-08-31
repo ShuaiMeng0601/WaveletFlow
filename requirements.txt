@@ -7,7 +7,15 @@ tqdm
 accelerate
 wandb
 requests
+numpy
+einops
+h5py
+matplotlib
+Pillow
+click
+tensorboard
+pytest
 git+https://github.com/openai/CLIP.git
 ftfy
 regex
-git+https://github.com/fbcotter/pytorch_wavelets
+git+https://github.com/fbcotter/pytorch_wavelets.git

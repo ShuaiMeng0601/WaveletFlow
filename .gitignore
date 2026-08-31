@@ -7,5 +7,7 @@ logs/*
 *.log
 *.ipynb
 */__pycache__
+.pytest_cache/
+*.pyc
 output/
 data/

@@ -76,6 +76,7 @@ def parse_args(input_args=None):
     parser.add_argument("--sampling-steps", type=int, default=10000)
     parser.add_argument("--ckpt-step", type=int, default=135000)
     parser.add_argument("--test-subset", type=str, default="")
+    parser.add_argument("--base-path", type=str, default="data")
 
     # model
     parser.add_argument("--model", type=str,default="SiT-XL/2")
@@ -175,7 +176,7 @@ def main(args):
     
     # flnm = '2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5'
     flnm = args.flnm
-    base_path='data/'
+    base_path = args.base_path
     reduce_resolution = args.reduced_resolution
     reduced_batch = 1
 
@@ -242,7 +243,7 @@ def main(args):
 
     print(f'==== {next(iter(test_dataloader))[0].mean().item():.6f} ====')
     
-    model.eval()  # important! This enables embedding dropout for classifier-free guidance
+    model.eval()
                
     from samplers import euler_sampler
     _err_RMSE_avg = 0
@@ -260,7 +261,7 @@ def main(args):
                 sample_input, 
                 raw_image_test,
                 num_steps=3, 
-                cfg_scale=4.0,
+                cfg_scale=1.0,
                 guidance_low=0.,
                 guidance_high=1.,
                 path_type=args.path_type,

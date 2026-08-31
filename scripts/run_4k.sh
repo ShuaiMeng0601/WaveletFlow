@@ -4,7 +4,8 @@
 # CyclicLR: 3 cycles auto-computed from total steps (4000*14=56000)
 # Checkpointing every 200 epochs = 2800 steps
 
-PYTHON=/data/shuaim/miniconda3/envs/waveletflow/bin/python
+PYTHON=${PYTHON:-python}
+mkdir -p exps
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 COMMON="--model SiT-S/2
@@ -19,7 +20,7 @@ COMMON="--model SiT-S/2
   --base-path data/
   --flnm 2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5
   --output-dir exps/
-  --logging-dir exps/logs
+  --logging-dir logs
   --num-workers 4"
 
 echo "Starting FourierFlow (AFNO) on GPU 0..."

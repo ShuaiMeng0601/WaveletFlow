@@ -31,28 +31,28 @@ def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Training")
     
     parser.add_argument("--exp-name", type=str, \
-                        default="3d_CFD_M0.1_0.01_align_difftrans_afno_cycle")
+                        default="waveletflow")
     parser.add_argument("--flnm", type=str, \
                         default="2D_CFD_Rand_M1.0_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5")
     parser.add_argument("--pretrained-mae-path", type=str, \
-                        default="/your_path/vivit-M1.0-1e-8-mask0.5-mae_1999.pt")
+                        default="exps/mae/vivit-M0.1-mask0.5-mae_final.pt")
     parser.add_argument("--base-path", type=str, \
-                        default="/your_path/CFD/2D_Train_Rand/")
+                        default="data")
     parser.add_argument("--model", type=str,default="SiT-XL/2")  # B -> "SiT-L/2"
     parser.add_argument("--batch-size", type=int, default=180)    # 100 for FourierFlow-S
     parser.add_argument("--reduced-resolution", type=int, default=4)
     parser.add_argument("--proj-coeff", type=float, default=0.0001)   # 0.001 for FourierFlow-S
     parser.add_argument("--learning-rate", type=float, default=5e-4) # 5e-4 for FourierFlow-S,1e-4 for FourierFlow-B
 
-    parser.add_argument("--output-dir", type=str, default="/your_path/FourierFlow/exps/")
-    parser.add_argument("--logging-dir", type=str, default="/your_path/FourierFlow/logs")
+    parser.add_argument("--output-dir", type=str, default="exps")
+    parser.add_argument("--logging-dir", type=str, default="logs")
     parser.add_argument("--report-to", type=str, default="tensorboard")
     parser.add_argument("--epochs", type=int, default=60001) # +1 for saving ckpts
     # (BS//len(loader)) iters for one epoch
     parser.add_argument("--sampling-steps", type=int, default=45000)
     parser.add_argument("--checkpointing-steps", type=int, default=45000)
     parser.add_argument("--resume-step", type=int, default=0)
-    parser.add_argument("--resume-name", type=str, default="/your_path")
+    parser.add_argument("--resume-name", type=str, default="")
     
 
     # model
@@ -345,7 +345,7 @@ def main(args):
     
     # Prepare models for training:
     update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
+    model.train()
     ema.eval()  # EMA model should always be in eval mode
     
     # resume:
@@ -359,6 +359,8 @@ def main(args):
         model.load_state_dict(remove_module_prefix(ckpt['model']))
         ema.load_state_dict(remove_module_prefix(ckpt['ema']))
         optimizer.load_state_dict(remove_module_prefix(ckpt['opt']))
+        if 'scheduler' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler'])
         global_step = ckpt['steps']
 
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
@@ -421,6 +423,8 @@ def main(args):
                     params_to_clip = model.parameters()
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
+                if accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped:
+                    scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 current_lr = optimizer.param_groups[0]['lr']
 
@@ -437,6 +441,7 @@ def main(args):
                         "model": model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
                         "args": args,
                         "steps": global_step,
                     }
@@ -445,7 +450,7 @@ def main(args):
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
             if global_step % args.sampling_steps == 0 and global_step > 0:
-                model.eval()  # important! This disables randomized embedding dropout
+                model.eval()
                 from samplers import euler_sampler
                 
                 _err_RMSE_avg = 0
@@ -463,7 +468,7 @@ def main(args):
                             sample_input, 
                             raw_image_test,
                             num_steps=50, 
-                            cfg_scale=4.0,
+                            cfg_scale=1.0,
                             guidance_low=0.,
                             guidance_high=1.,
                             path_type=args.path_type,
@@ -493,8 +498,6 @@ def main(args):
             }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
-
-        scheduler.step()
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
